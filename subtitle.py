@@ -13,10 +13,14 @@ The spoken language is detected automatically (or given with --language).
 Line length and word joining adapt to the script: Latin/Cyrillic get 42
 characters per line, Chinese/Japanese/Korean 18, Thai-like scripts 32.
 
+Inputs can also be URLs (YouTube and the other sites yt-dlp supports): the
+video is downloaded first, then handled like a local file.
+
 Usage:
   uv run subtitle.py film.mkv
   uv run subtitle.py film.mp4 --burn
   uv run subtitle.py *.avi --srt-only --language ru
+  uv run subtitle.py https://www.youtube.com/watch?v=XXXX
 """
 
 from __future__ import annotations
@@ -168,6 +172,44 @@ def burn_subtitles(ffmpeg: str, media: Path, srt: Path, out: Path, crf: int) -> 
                "-c:a", "copy", "-map", "0:v:0", "-map", "0:a?",
                str(out.resolve())]
         subprocess.run(cmd, check=True, cwd=tmp)
+
+
+# --------------------------------------------------------------------------- #
+# download
+# --------------------------------------------------------------------------- #
+
+def is_url(s: str) -> bool:
+    return s.startswith(("http://", "https://"))
+
+
+def download(url: str, out_dir: Path, ffmpeg: str, max_height: int, quiet: bool) -> list[Path]:
+    """Download a video (or every video of a playlist) with yt-dlp. Returns the file paths."""
+    import yt_dlp
+
+    opts = {
+        "format": f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best",
+        "merge_output_format": "mkv",
+        "outtmpl": str(out_dir / "%(title).150B [%(id)s].%(ext)s"),
+        "ffmpeg_location": str(Path(ffmpeg).parent),
+        "quiet": quiet,
+        "no_warnings": quiet,
+        "noprogress": quiet,
+        "ignoreerrors": "only_download",   # a broken playlist entry doesn't stop the rest
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+    entries = info.get("entries") or [info]
+    files = []
+    for e in entries:
+        if not e:
+            continue
+        downloads = e.get("requested_downloads") or []
+        path = downloads[0].get("filepath") if downloads else None
+        if path and Path(path).exists():
+            files.append(Path(path))
+    if not files:
+        raise RuntimeError(f"nothing downloaded from {url}")
+    return files
 
 
 # --------------------------------------------------------------------------- #
@@ -386,7 +428,7 @@ def main() -> None:
     ensure_cuda_libs_on_path()
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("media", nargs="+", type=Path, help="video or audio file(s)")
+    p.add_argument("media", nargs="+", help="video/audio file(s) or URL(s)")
     p.add_argument("--model", default="large-v3-turbo",
                    help="Whisper model: tiny, base, small, medium, large-v3, "
                         "large-v3-turbo (default)")
@@ -394,7 +436,10 @@ def main() -> None:
                    help="spoken language code such as ru, en, ja; default auto = detect "
                         "from the first 30 seconds of speech")
     p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
-    p.add_argument("--output-dir", help="where to write outputs (default: next to input)")
+    p.add_argument("--output-dir", help="where to write outputs (default: next to input; "
+                                        "for URLs the current directory)")
+    p.add_argument("--max-height", type=int, default=1080,
+                   help="highest video resolution to download for URLs (default 1080)")
     p.add_argument("--srt-only", action="store_true", help="only write the .srt file")
     p.add_argument("--burn", action="store_true",
                    help="burn subtitles into the picture (re-encodes video) "
@@ -405,17 +450,31 @@ def main() -> None:
 
     ffmpeg, ffprobe = find_tool("ffmpeg"), find_tool("ffprobe")
     failures = 0
-    for media in args.media:
-        if not media.exists():
-            print(f"skip: {media} does not exist", file=sys.stderr)
-            failures += 1
-            continue
-        try:
-            process(media, args, ffmpeg, ffprobe)
-        except subprocess.CalledProcessError as e:
-            print(f"error: command failed ({e.returncode}): {' '.join(map(str, e.cmd))}",
-                  file=sys.stderr)
-            failures += 1
+    for item in args.media:
+        files: list[Path]
+        if is_url(item):
+            target = Path(args.output_dir) if args.output_dir else Path.cwd()
+            target.mkdir(parents=True, exist_ok=True)
+            print(f"=== downloading {item}")
+            try:
+                files = download(item, target, ffmpeg, args.max_height, args.quiet)
+            except Exception as e:  # yt-dlp raises many kinds; report and move on
+                print(f"error: download failed: {e}", file=sys.stderr)
+                failures += 1
+                continue
+        else:
+            files = [Path(item)]
+        for media in files:
+            if not media.exists():
+                print(f"skip: {media} does not exist", file=sys.stderr)
+                failures += 1
+                continue
+            try:
+                process(media, args, ffmpeg, ffprobe)
+            except subprocess.CalledProcessError as e:
+                print(f"error: command failed ({e.returncode}): {' '.join(map(str, e.cmd))}",
+                      file=sys.stderr)
+                failures += 1
     sys.exit(1 if failures else 0)
 
 

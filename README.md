@@ -2,8 +2,9 @@
 
 Automatic same-language subtitles for films that have none, in any language Whisper knows.
 
-Give it a video (or audio) file and it will:
+Give it a video (or audio) file, or a YouTube link, and it will:
 
+0. download the video if you gave a URL (via yt-dlp, so most video sites work),
 1. extract the soundtrack with ffmpeg,
 2. transcribe it with Whisper (`faster-whisper`, on the GPU if you have one),
 3. group the words into readable subtitle cues and write a `.srt`,
@@ -29,7 +30,7 @@ git clone https://github.com/mild-rgb/auto-subtitles.git
 cd auto-subtitles
 ```
 
-The first `uv run` creates a Python 3.12 environment and installs everything else, including the CUDA libraries needed for NVIDIA GPUs. No system CUDA install is required. The Whisper model (about 1.6 GB) downloads on first use into `~/.cache/huggingface`.
+The first `uv run` creates a Python 3.12 environment and installs everything else, including yt-dlp and the CUDA libraries needed for NVIDIA GPUs. No system CUDA install is required. The Whisper model (about 1.6 GB) downloads on first use into `~/.cache/huggingface`.
 
 **GPU:** any NVIDIA card with 4 GB or more of memory works. Without an NVIDIA GPU it runs on the CPU, which is many times slower but produces the same result.
 
@@ -50,6 +51,11 @@ uv run subtitle.py film.mp4 --burn
 
 # Put results somewhere else
 uv run subtitle.py film.mp4 --output-dir ~/Videos/subbed
+
+# A YouTube video (or playlist, or any site yt-dlp supports): downloaded into the
+# current directory (or --output-dir), then processed like a local file
+uv run subtitle.py "https://www.youtube.com/watch?v=XXXXXXXXXXX"
+uv run subtitle.py "https://www.youtube.com/watch?v=XXXXXXXXXXX" --max-height 720 --output-dir ~/Videos
 ```
 
 Try it on the included sample, a 90 second public-domain reading of Chekhov's play "Предложение" (LibriVox):
@@ -78,6 +84,7 @@ Speed: about 10x real time on a modest GPU (GTX 1050 Ti), so a 2 hour film takes
 | `--burn` | off | hard-code subtitles instead of adding a track |
 | `--crf` | 20 | video quality for `--burn`, lower is better and bigger |
 | `--srt-only` | off | skip the video step |
+| `--max-height` | 1080 | highest resolution to download when the input is a URL |
 | `--quiet` | off | hide the progress line |
 
 Subtitle layout limits (line length per script, cue duration, pause splitting) are constants at the top of `subtitle.py`.
