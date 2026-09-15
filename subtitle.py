@@ -128,8 +128,10 @@ def has_video_stream(ffprobe: str, media: Path) -> bool:
 
 def attach_subtitles(ffmpeg: str, media: Path, srt: Path, out: Path, language: str) -> None:
     """Copy all streams as they are and add the .srt as a selectable subtitle track."""
+    # -dn drops data streams (e.g. the timecode track some MP4s carry), which
+    # Matroska cannot hold and which would make ffmpeg refuse to write the file.
     run_ffmpeg(ffmpeg, ["-i", str(media), "-i", str(srt),
-                        "-map", "0", "-map", "1:0",
+                        "-map", "0", "-map", "1:0", "-dn",
                         "-c", "copy", "-c:s", "srt",
                         "-metadata:s:s:0", f"language={ISO_639_2.get(language, 'und')}",
                         "-metadata:s:s:0", f"title={language} (auto)",
