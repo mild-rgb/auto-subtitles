@@ -1,7 +1,7 @@
 [project]
-name = "auto-rus-subtitles"
+name = "auto-subtitles"
 version = "0.1.0"
-description = "Automatically add Russian subtitles to a video: ffmpeg + faster-whisper"
+description = "Automatically add same-language subtitles to a video in any Whisper language: ffmpeg + faster-whisper"
 requires-python = ">=3.12"
 dependencies = [
     "faster-whisper>=1.2.1",

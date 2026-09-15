@@ -16,7 +16,7 @@ wheels = [
 ]
 
 [[package]]
-name = "auto-rus-subtitles"
+name = "auto-subtitles"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

@@ -1,6 +1,6 @@
-# auto_rus_subtitles
+# auto-subtitles
 
-Automatic Russian subtitles for films that have none.
+Automatic same-language subtitles for films that have none, in any language Whisper knows.
 
 Give it a video (or audio) file and it will:
 
@@ -9,7 +9,7 @@ Give it a video (or audio) file and it will:
 3. group the words into readable subtitle cues and write a `.srt`,
 4. produce a copy of the video with the subtitles attached.
 
-Made for language learners who can read Russian but want help following spoken dialogue. It works for any of the roughly 99 languages Whisper knows: the language is detected automatically from the first 30 seconds of speech, and line length and word joining adapt to the writing system (Latin and Cyrillic, Chinese/Japanese/Korean, Thai and similar scripts).
+Made for language learners who can read a language but want help following spoken dialogue. The spoken language is detected automatically from the first 30 seconds of speech, and the subtitles are written in that same language. Line length and word joining adapt to the writing system (Latin and Cyrillic, Chinese/Japanese/Korean, Thai and similar scripts). It started as a tool for Russian films, which is why the sample is Chekhov.
 
 ## Install
 
@@ -25,8 +25,8 @@ You need three things:
 3. This repository:
 
 ```bash
-git clone https://github.com/mild-rgb/auto_rus_subtitles.git
-cd auto_rus_subtitles
+git clone https://github.com/mild-rgb/auto-subtitles.git
+cd auto-subtitles
 ```
 
 The first `uv run` creates a Python 3.12 environment and installs everything else, including the CUDA libraries needed for NVIDIA GPUs. No system CUDA install is required. The Whisper model (about 1.6 GB) downloads on first use into `~/.cache/huggingface`.
@@ -36,7 +36,7 @@ The first `uv run` creates a Python 3.12 environment and installs everything els
 ## Usage
 
 ```bash
-# Default: writes film.ru.srt and film.subbed.mkv (subtitle track, no re-encode, fast)
+# Default: writes film.<lang>.srt and film.subbed.mkv (subtitle track, no re-encode, fast)
 uv run subtitle.py /path/to/film.mkv
 
 # Several files at once
@@ -62,7 +62,7 @@ Outputs go next to the input file unless `--output-dir` is given:
 
 | file | what it is |
 |---|---|
-| `film.ru.srt` | plain subtitle file, editable in any text editor (`ru` is the detected language) |
+| `film.ru.srt` | plain subtitle file, editable in any text editor, named after the detected language |
 | `film.subbed.mkv` | original video and audio copied as-is, plus a subtitle track, tagged with the language and set as default |
 | `film.subbed.mp4` | only with `--burn`: subtitles drawn into the picture |
 

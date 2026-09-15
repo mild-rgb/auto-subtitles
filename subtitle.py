@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Automatic Russian subtitles for a media file.
+Automatic same-language subtitles for a media file, in any language Whisper knows.
 
 Pipeline:
   1. ffmpeg extracts the soundtrack as 16 kHz mono WAV.
