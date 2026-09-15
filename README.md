@@ -103,7 +103,7 @@ ffmpeg -i film.mkv -i film.ru.srt -map 0 -map 1 -c copy -c:s srt -metadata:s:s:0
 
 ## How it works
 
-- `subtitle.py` is the whole pipeline, about 300 lines, no framework.
+- `subtitle.py` is the whole pipeline, one file, no framework. `test_subtitle.py` covers the cue-building and line-wrapping logic (run `uv run python -m unittest`).
 - Transcription uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (Whisper on CTranslate2) with word timestamps, voice activity detection, and `condition_on_previous_text=False` to avoid repeated-text loops.
 - Cues are rebuilt from word timestamps: at most 2 lines, at most 6 seconds on screen, split at sentence ends, commas, and pauses longer than 0.8 s. Two-line cues are balanced rather than greedily wrapped.
 - Line length follows the script: 42 characters for Latin, Cyrillic and most others, 18 for Chinese and Japanese, 20 for Korean, 32 for Thai, Lao, Khmer and Burmese. Languages written without spaces are joined without spaces and split at any character, preferring a break after punctuation.

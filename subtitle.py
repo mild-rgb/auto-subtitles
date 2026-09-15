@@ -39,43 +39,13 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-
-def ensure_cuda_libs_on_path() -> None:
-    """Make the pip-installed NVIDIA libraries (cuBLAS, cuDNN) findable.
-
-    Linux: the loader only reads LD_LIBRARY_PATH at start-up, so if we had to
-    add anything we re-launch this same process once with the new value.
-    Windows: DLL directories can be added at runtime, no re-launch needed.
-    """
-    try:
-        import nvidia  # the namespace package that holds nvidia/cublas, nvidia/cudnn, ...
-    except ImportError:
-        return
-    roots = [Path(r) for r in nvidia.__path__]
-    if sys.platform == "win32":
-        for d in (d for root in roots for d in root.glob("*/bin") if d.is_dir()):
-            os.add_dll_directory(str(d))
-            os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
-        return
-    if os.environ.get("_SUBTITLE_REEXEC"):
-        return
-    lib_dirs = [str(d) for root in roots for d in root.glob("*/lib") if d.is_dir()]
-    if not lib_dirs:
-        return
-    current = os.environ.get("LD_LIBRARY_PATH", "")
-    if all(d in current.split(":") for d in lib_dirs):
-        return
-    os.environ["LD_LIBRARY_PATH"] = ":".join([*lib_dirs, current]).rstrip(":")
-    os.environ["_SUBTITLE_REEXEC"] = "1"
-    os.execv(sys.executable, [sys.executable, *sys.argv])
-
-
 # Subtitle layout limits (roughly what TV broadcasters use).
 MAX_LINES = 2             # lines per cue
 MAX_CUE_SECONDS = 6.0     # longest a single cue stays on screen
 MIN_CUE_SECONDS = 1.0     # shortest a cue may be shown (stretched if possible)
 PAUSE_SPLIT_SECONDS = 0.8 # a silence this long between words starts a new cue
 CUE_GAP_SECONDS = 0.08    # small gap so consecutive cues do not touch
+MIN_BREAK_CHARS = 12      # never back up to a punctuation break that leaves a shorter cue
 
 
 @dataclass(frozen=True)
@@ -136,16 +106,16 @@ def find_tool(name: str) -> str:
     sys.exit(f"error: {name} not found on PATH or in {HERE / 'bin'}")
 
 
-def run(cmd: list[str], quiet: bool = True) -> None:
-    if quiet:
-        cmd = [cmd[0], "-hide_banner", "-loglevel", "error", *cmd[1:]]
-    subprocess.run(cmd, check=True)
+def run_ffmpeg(ffmpeg: str, args: list[str], cwd: str | None = None) -> None:
+    """Run ffmpeg with the given arguments, printing only errors."""
+    subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *args],
+                   check=True, cwd=cwd)
 
 
 def extract_audio(ffmpeg: str, media: Path, wav: Path) -> None:
     """Decode the first audio stream to 16 kHz mono PCM, which is what Whisper wants."""
-    run([ffmpeg, "-y", "-i", str(media), "-vn", "-sn", "-dn",
-         "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)])
+    run_ffmpeg(ffmpeg, ["-i", str(media), "-vn", "-sn", "-dn", "-map", "0:a:0",
+                        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)])
 
 
 def has_video_stream(ffprobe: str, media: Path) -> bool:
@@ -158,13 +128,13 @@ def has_video_stream(ffprobe: str, media: Path) -> bool:
 
 def attach_subtitles(ffmpeg: str, media: Path, srt: Path, out: Path, language: str) -> None:
     """Copy all streams as they are and add the .srt as a selectable subtitle track."""
-    run([ffmpeg, "-y", "-i", str(media), "-i", str(srt),
-         "-map", "0", "-map", "1:0",
-         "-c", "copy", "-c:s", "srt",
-         "-metadata:s:s:0", f"language={ISO_639_2.get(language, 'und')}",
-         "-metadata:s:s:0", f"title={language} (auto)",
-         "-disposition:s:0", "default",
-         str(out)])
+    run_ffmpeg(ffmpeg, ["-i", str(media), "-i", str(srt),
+                        "-map", "0", "-map", "1:0",
+                        "-c", "copy", "-c:s", "srt",
+                        "-metadata:s:s:0", f"language={ISO_639_2.get(language, 'und')}",
+                        "-metadata:s:s:0", f"title={language} (auto)",
+                        "-disposition:s:0", "default",
+                        str(out)])
 
 
 def burn_subtitles(ffmpeg: str, media: Path, srt: Path, out: Path, crf: int) -> None:
@@ -173,13 +143,12 @@ def burn_subtitles(ffmpeg: str, media: Path, srt: Path, out: Path, crf: int) -> 
     # real path we hand it a plain-named copy and run ffmpeg from that folder.
     with tempfile.TemporaryDirectory(prefix="burn_") as tmp:
         shutil.copy(srt, Path(tmp) / "subs.srt")
-        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-               "-i", str(media.resolve()),
-               "-vf", "subtitles=subs.srt:force_style='FontSize=20,Outline=1'",
-               "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
-               "-c:a", "copy", "-map", "0:v:0", "-map", "0:a?",
-               str(out.resolve())]
-        subprocess.run(cmd, check=True, cwd=tmp)
+        run_ffmpeg(ffmpeg, ["-i", str(media.resolve()),
+                            "-vf", "subtitles=subs.srt:force_style='FontSize=20,Outline=1'",
+                            "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+                            "-c:a", "copy", "-map", "0:v:0", "-map", "0:a?",
+                            str(out.resolve())],
+                   cwd=tmp)
 
 
 # --------------------------------------------------------------------------- #
@@ -208,10 +177,10 @@ def download(url: str, out_dir: Path, ffmpeg: str, max_height: int, quiet: bool)
         info = ydl.extract_info(url, download=True)
     entries = info.get("entries") or [info]
     files = []
-    for e in entries:
-        if not e:
+    for entry in entries:
+        if not entry:
             continue
-        downloads = e.get("requested_downloads") or []
+        downloads = entry.get("requested_downloads") or []
         path = downloads[0].get("filepath") if downloads else None
         if path and Path(path).exists():
             files.append(Path(path))
@@ -224,7 +193,7 @@ def download(url: str, out_dir: Path, ffmpeg: str, max_height: int, quiet: bool)
 # transcription
 # --------------------------------------------------------------------------- #
 
-@dataclass
+@dataclass(frozen=True)
 class Word:
     start: float
     end: float
@@ -299,8 +268,17 @@ class Cue:
     text: str
 
 
-STRONG_END = re.compile(r"[.!?…。！？]+[»\"')」』]*$")
-WEAK_END = re.compile(r"[,;:—\-、，；：]+$")
+STRONG_END = re.compile(r"[.!?…。！？]+[»\"')」』]*$")   # end of a sentence
+WEAK_END = re.compile(r"[,;:—\-、，；：]+$")             # a pause inside a sentence
+
+
+def ends_sentence(text: str) -> bool:
+    return STRONG_END.search(text) is not None
+
+
+def ends_clause(text: str) -> bool:
+    """True after any punctuation, strong or weak."""
+    return ends_sentence(text) or WEAK_END.search(text) is not None
 
 
 def build_cues(words: list[Word], layout: Layout) -> list[Cue]:
@@ -315,8 +293,9 @@ def build_cues(words: list[Word], layout: Layout) -> list[Cue]:
 
     def flush(upto: int | None = None) -> None:
         """Emit cur[:upto] as a cue and keep the rest for the next one."""
-        part = cur[:upto] if upto is not None else cur[:]
-        rest = cur[upto:] if upto is not None else []
+        if upto is None:
+            upto = len(cur)
+        part, rest = cur[:upto], cur[upto:]
         if part:
             cues.append(Cue(part[0].start, part[-1].end, sep.join(w.text for w in part)))
         cur[:] = rest
@@ -324,8 +303,7 @@ def build_cues(words: list[Word], layout: Layout) -> list[Cue]:
     def last_good_break() -> int | None:
         """Index after the last punctuation-ended word, if it leaves a decent cue."""
         for i in range(len(cur) - 1, 0, -1):
-            if (STRONG_END.search(cur[i - 1].text) or WEAK_END.search(cur[i - 1].text)) \
-                    and text_len(cur[:i]) >= 12:
+            if ends_clause(cur[i - 1].text) and text_len(cur[:i]) >= MIN_BREAK_CHARS:
                 return i
         return None
 
@@ -336,9 +314,9 @@ def build_cues(words: list[Word], layout: Layout) -> list[Cue]:
             pause = w.start - cur[-1].end
             if pause > PAUSE_SPLIT_SECONDS:
                 flush()                                  # natural break: silence
-            elif STRONG_END.search(prev) and cur_len >= 15:
+            elif ends_sentence(prev) and cur_len >= 15:
                 flush()                                  # natural break: end of sentence
-            elif WEAK_END.search(prev) and cur_len >= max_chars * 0.7:
+            elif ends_clause(prev) and cur_len >= max_chars * 0.7:
                 flush()                                  # comma late in the cue
             elif cur_len + len(sep) + len(w.text) > max_chars or w.end - cur[0].start > MAX_CUE_SECONDS:
                 flush(last_good_break())                 # forced: back up to punctuation
@@ -346,12 +324,11 @@ def build_cues(words: list[Word], layout: Layout) -> list[Cue]:
     flush()
 
     # Timing clean-up: enforce a minimum display time, never overlap the next cue.
-    for i, c in enumerate(cues):
-        nxt = cues[i + 1].start if i + 1 < len(cues) else None
+    for c, nxt in zip(cues, cues[1:] + [None]):
         if c.end - c.start < MIN_CUE_SECONDS:
             c.end = c.start + MIN_CUE_SECONDS
-        if nxt is not None and c.end > nxt - CUE_GAP_SECONDS:
-            c.end = max(nxt - CUE_GAP_SECONDS, c.start + 0.3)
+        if nxt is not None and c.end > nxt.start - CUE_GAP_SECONDS:
+            c.end = max(nxt.start - CUE_GAP_SECONDS, c.start + 0.3)
     return cues
 
 
@@ -372,7 +349,7 @@ def wrap_lines(text: str, layout: Layout) -> str:
         if len(a) > max_chars or len(b) > max_chars:
             continue
         score = abs(len(a) - len(b))
-        if STRONG_END.search(a) or WEAK_END.search(a):
+        if ends_clause(a):
             score -= 12          # a break after punctuation reads better
         if best_score is None or score < best_score:
             best, best_score = (a, b), score
@@ -401,8 +378,38 @@ def write_srt(cues: list[Cue], path: Path, layout: Layout) -> None:
 # main
 # --------------------------------------------------------------------------- #
 
+def ensure_cuda_libs_on_path() -> None:
+    """Make the pip-installed NVIDIA libraries (cuBLAS, cuDNN) findable.
+
+    Linux: the loader only reads LD_LIBRARY_PATH at start-up, so if we had to
+    add anything we re-launch this same process once with the new value.
+    Windows: DLL directories can be added at runtime, no re-launch needed.
+    """
+    try:
+        import nvidia  # the namespace package that holds nvidia/cublas, nvidia/cudnn, ...
+    except ImportError:
+        return
+    roots = [Path(r) for r in nvidia.__path__]
+    if sys.platform == "win32":
+        for d in (d for root in roots for d in root.glob("*/bin") if d.is_dir()):
+            os.add_dll_directory(str(d))
+            os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+        return
+    if os.environ.get("_SUBTITLE_REEXEC"):
+        return
+    lib_dirs = [str(d) for root in roots for d in root.glob("*/lib") if d.is_dir()]
+    if not lib_dirs:
+        return
+    current = os.environ.get("LD_LIBRARY_PATH", "")
+    if all(d in current.split(":") for d in lib_dirs):
+        return
+    os.environ["LD_LIBRARY_PATH"] = ":".join([*lib_dirs, current]).rstrip(":")
+    os.environ["_SUBTITLE_REEXEC"] = "1"
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
 def process(media: Path, args: argparse.Namespace, ffmpeg: str, ffprobe: str) -> None:
-    out_dir = Path(args.output_dir) if args.output_dir else media.parent
+    out_dir = args.output_dir or media.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"=== {media.name}")
@@ -432,8 +439,7 @@ def process(media: Path, args: argparse.Namespace, ffmpeg: str, ffprobe: str) ->
     print(f"      done: {out}")
 
 
-def main() -> None:
-    ensure_cuda_libs_on_path()
+def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("media", nargs="+", help="video/audio file(s) or URL(s)")
@@ -444,8 +450,9 @@ def main() -> None:
                    help="spoken language code such as ru, en, ja; default auto = detect "
                         "from the first 30 seconds of speech")
     p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
-    p.add_argument("--output-dir", help="where to write outputs (default: next to input; "
-                                        "for URLs the current directory)")
+    p.add_argument("--output-dir", type=Path,
+                   help="where to write outputs (default: next to input; "
+                        "for URLs the current directory)")
     p.add_argument("--max-height", type=int, default=1080,
                    help="highest video resolution to download for URLs (default 1080)")
     p.add_argument("--srt-only", action="store_true", help="only write the .srt file")
@@ -454,14 +461,18 @@ def main() -> None:
                         "instead of adding a subtitle track")
     p.add_argument("--crf", type=int, default=20, help="x264 quality for --burn (lower=better)")
     p.add_argument("--quiet", action="store_true", help="no progress line")
-    args = p.parse_args()
+    return p.parse_args()
 
+
+def main() -> None:
+    ensure_cuda_libs_on_path()
+    args = parse_args()
     ffmpeg, ffprobe = find_tool("ffmpeg"), find_tool("ffprobe")
+
     failures = 0
     for item in args.media:
-        files: list[Path]
         if is_url(item):
-            target = Path(args.output_dir) if args.output_dir else Path.cwd()
+            target = args.output_dir or Path.cwd()
             target.mkdir(parents=True, exist_ok=True)
             print(f"=== downloading {item}")
             try:
