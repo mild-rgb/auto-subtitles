@@ -41,18 +41,25 @@ HERE = Path(__file__).resolve().parent
 
 
 def ensure_cuda_libs_on_path() -> None:
-    """Put the pip-installed NVIDIA libraries (cuBLAS, cuDNN) on LD_LIBRARY_PATH.
+    """Make the pip-installed NVIDIA libraries (cuBLAS, cuDNN) findable.
 
-    The dynamic loader only reads LD_LIBRARY_PATH at start-up, so if we had to
+    Linux: the loader only reads LD_LIBRARY_PATH at start-up, so if we had to
     add anything we re-launch this same process once with the new value.
+    Windows: DLL directories can be added at runtime, no re-launch needed.
     """
-    if os.environ.get("_SUBTITLE_REEXEC"):
-        return
     try:
         import nvidia  # the namespace package that holds nvidia/cublas, nvidia/cudnn, ...
     except ImportError:
         return
-    lib_dirs = [str(d) for root in nvidia.__path__ for d in Path(root).glob("*/lib") if d.is_dir()]
+    roots = [Path(r) for r in nvidia.__path__]
+    if sys.platform == "win32":
+        for d in (d for root in roots for d in root.glob("*/bin") if d.is_dir()):
+            os.add_dll_directory(str(d))
+            os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+        return
+    if os.environ.get("_SUBTITLE_REEXEC"):
+        return
+    lib_dirs = [str(d) for root in roots for d in root.glob("*/lib") if d.is_dir()]
     if not lib_dirs:
         return
     current = os.environ.get("LD_LIBRARY_PATH", "")
@@ -61,6 +68,7 @@ def ensure_cuda_libs_on_path() -> None:
     os.environ["LD_LIBRARY_PATH"] = ":".join([*lib_dirs, current]).rstrip(":")
     os.environ["_SUBTITLE_REEXEC"] = "1"
     os.execv(sys.executable, [sys.executable, *sys.argv])
+
 
 # Subtitle layout limits (roughly what TV broadcasters use).
 MAX_LINES = 2             # lines per cue
