@@ -9,7 +9,7 @@ Give it a video (or audio) file and it will:
 3. group the words into readable subtitle cues and write a `.srt`,
 4. produce a copy of the video with the subtitles attached.
 
-Made for language learners who can read Russian but want help following spoken dialogue. It works for other languages too: pass `--language en`, `--language de`, and so on.
+Made for language learners who can read Russian but want help following spoken dialogue. It works for any of the roughly 99 languages Whisper knows: the language is detected automatically from the first 30 seconds of speech, and line length and word joining adapt to the writing system (Latin and Cyrillic, Chinese/Japanese/Korean, Thai and similar scripts).
 
 ## Install
 
@@ -62,8 +62,8 @@ Outputs go next to the input file unless `--output-dir` is given:
 
 | file | what it is |
 |---|---|
-| `film.ru.srt` | plain subtitle file, editable in any text editor |
-| `film.subbed.mkv` | original video and audio copied as-is, plus a Russian subtitle track set as default |
+| `film.ru.srt` | plain subtitle file, editable in any text editor (`ru` is the detected language) |
+| `film.subbed.mkv` | original video and audio copied as-is, plus a subtitle track, tagged with the language and set as default |
 | `film.subbed.mp4` | only with `--burn`: subtitles drawn into the picture |
 
 Speed: about 10x real time on a modest GPU (GTX 1050 Ti), so a 2 hour film takes 12 to 15 minutes. Newer GPUs are much faster.
@@ -73,19 +73,21 @@ Speed: about 10x real time on a modest GPU (GTX 1050 Ti), so a 2 hour film takes
 | flag | default | meaning |
 |---|---|---|
 | `--model` | `large-v3-turbo` | Whisper model. `medium` or `small` are faster but less accurate. `large-v3` is a bit more accurate but about 5x slower. |
-| `--language` | `ru` | spoken language code |
+| `--language` | `auto` | spoken language code such as `ru`, `en`, `ja`. `auto` detects it. Set it explicitly if detection picks wrong, for example on a film that opens with a song. |
 | `--device` | `auto` | `cuda` or `cpu` |
 | `--burn` | off | hard-code subtitles instead of adding a track |
 | `--crf` | 20 | video quality for `--burn`, lower is better and bigger |
 | `--srt-only` | off | skip the video step |
 | `--quiet` | off | hide the progress line |
 
-Subtitle layout limits (line length, cue duration, pause splitting) are constants at the top of `subtitle.py`.
+Subtitle layout limits (line length per script, cue duration, pause splitting) are constants at the top of `subtitle.py`.
 
 ## Tips for accuracy
 
 - Whisper occasionally invents text during long music or silence. Voice activity detection is on to limit this. If you see a nonsense cue, just delete it from the `.srt`.
 - Very noisy or overlapping dialogue gets worse results. Try `--model large-v3` for a difficult film.
+- Quality depends on the language. Major European and East Asian languages are very good. Low-resource languages (many African languages, Welsh, Nepali, Lao and similar) come out rough.
+- A film with two languages in it is a known weak spot. Whisper picks one language per 30 second chunk and tends to garble the other.
 - The `.srt` is the source of truth. Fix it in a text editor and re-attach with:
 
 ```bash
@@ -96,7 +98,8 @@ ffmpeg -i film.mkv -i film.ru.srt -map 0 -map 1 -c copy -c:s srt -metadata:s:s:0
 
 - `subtitle.py` is the whole pipeline, about 300 lines, no framework.
 - Transcription uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (Whisper on CTranslate2) with word timestamps, voice activity detection, and `condition_on_previous_text=False` to avoid repeated-text loops.
-- Cues are rebuilt from word timestamps: at most 2 lines of 42 characters, at most 6 seconds on screen, split at sentence ends, commas, and pauses longer than 0.8 s. Two-line cues are balanced rather than greedily wrapped.
+- Cues are rebuilt from word timestamps: at most 2 lines, at most 6 seconds on screen, split at sentence ends, commas, and pauses longer than 0.8 s. Two-line cues are balanced rather than greedily wrapped.
+- Line length follows the script: 42 characters for Latin, Cyrillic and most others, 18 for Chinese and Japanese, 20 for Korean, 32 for Thai, Lao, Khmer and Burmese. Languages written without spaces are joined without spaces and split at any character, preferring a break after punctuation.
 - On Linux the script puts the pip-installed CUDA libraries on `LD_LIBRARY_PATH` and re-launches itself once, so the GPU works without a system CUDA install.
 
 ## License

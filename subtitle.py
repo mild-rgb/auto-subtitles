@@ -9,10 +9,14 @@ Pipeline:
   4. ffmpeg attaches the .srt to the video as a subtitle track (no re-encoding),
      or burns it into the picture if --burn is given.
 
+The spoken language is detected automatically (or given with --language).
+Line length and word joining adapt to the script: Latin/Cyrillic get 42
+characters per line, Chinese/Japanese/Korean 18, Thai-like scripts 32.
+
 Usage:
   uv run subtitle.py film.mkv
   uv run subtitle.py film.mp4 --burn
-  uv run subtitle.py *.avi --srt-only
+  uv run subtitle.py *.avi --srt-only --language ru
 """
 
 from __future__ import annotations
@@ -55,12 +59,54 @@ def ensure_cuda_libs_on_path() -> None:
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 # Subtitle layout limits (roughly what TV broadcasters use).
-MAX_LINE_CHARS = 42       # characters per line
 MAX_LINES = 2             # lines per cue
 MAX_CUE_SECONDS = 6.0     # longest a single cue stays on screen
 MIN_CUE_SECONDS = 1.0     # shortest a cue may be shown (stretched if possible)
 PAUSE_SPLIT_SECONDS = 0.8 # a silence this long between words starts a new cue
 CUE_GAP_SECONDS = 0.08    # small gap so consecutive cues do not touch
+
+
+@dataclass(frozen=True)
+class Layout:
+    """How to lay out text for a given writing system."""
+    max_line_chars: int   # characters per line
+    sep: str              # what goes between transcribed words: " " or ""
+
+
+# Wide characters that carry a whole syllable or word each: fewer fit on a line,
+# and the language writes no spaces between words.
+CJK_LAYOUT = Layout(max_line_chars=18, sep="")
+# Korean uses wide characters but does put spaces between words.
+KOREAN_LAYOUT = Layout(max_line_chars=20, sep=" ")
+# Thai, Lao, Khmer, Burmese: narrow letters, but no spaces between words.
+NO_SPACE_LAYOUT = Layout(max_line_chars=32, sep="")
+DEFAULT_LAYOUT = Layout(max_line_chars=42, sep=" ")
+
+LAYOUT_BY_LANGUAGE = {
+    "zh": CJK_LAYOUT, "yue": CJK_LAYOUT, "ja": CJK_LAYOUT,
+    "ko": KOREAN_LAYOUT,
+    "th": NO_SPACE_LAYOUT, "lo": NO_SPACE_LAYOUT, "km": NO_SPACE_LAYOUT, "my": NO_SPACE_LAYOUT,
+}
+
+
+def layout_for(language: str) -> Layout:
+    return LAYOUT_BY_LANGUAGE.get(language, DEFAULT_LAYOUT)
+
+
+# ISO 639-1 (what Whisper reports) -> ISO 639-2 (what video containers expect).
+ISO_639_2 = {
+    "ar": "ara", "bg": "bul", "ca": "cat", "cs": "ces", "da": "dan", "de": "deu",
+    "el": "ell", "en": "eng", "es": "spa", "et": "est", "fa": "fas", "fi": "fin",
+    "fr": "fra", "he": "heb", "hi": "hin", "hr": "hrv", "hu": "hun", "id": "ind",
+    "it": "ita", "ja": "jpn", "ko": "kor", "lt": "lit", "lv": "lav", "ms": "msa",
+    "nl": "nld", "no": "nor", "pl": "pol", "pt": "por", "ro": "ron", "ru": "rus",
+    "sk": "slk", "sl": "slv", "sr": "srp", "sv": "swe", "th": "tha", "tr": "tur",
+    "uk": "ukr", "ur": "urd", "vi": "vie", "zh": "zho", "yue": "yue", "be": "bel",
+    "kk": "kaz", "ka": "kat", "hy": "hye", "az": "aze", "uz": "uzb", "tg": "tgk",
+    "ky": "kir", "mn": "mon", "lo": "lao", "km": "khm", "my": "mya", "ta": "tam",
+    "bn": "ben", "sw": "swa", "tl": "tgl", "cy": "cym", "eu": "eus", "gl": "glg",
+    "is": "isl", "mk": "mkd", "sq": "sqi", "bs": "bos", "af": "afr", "ne": "nep",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -98,13 +144,13 @@ def has_video_stream(ffprobe: str, media: Path) -> bool:
     return "video" in out
 
 
-def attach_subtitles(ffmpeg: str, media: Path, srt: Path, out: Path) -> None:
+def attach_subtitles(ffmpeg: str, media: Path, srt: Path, out: Path, language: str) -> None:
     """Copy all streams as they are and add the .srt as a selectable subtitle track."""
     run([ffmpeg, "-y", "-i", str(media), "-i", str(srt),
          "-map", "0", "-map", "1:0",
          "-c", "copy", "-c:s", "srt",
-         "-metadata:s:s:0", "language=rus",
-         "-metadata:s:s:0", "title=Русские (авто)",
+         "-metadata:s:s:0", f"language={ISO_639_2.get(language, 'und')}",
+         "-metadata:s:s:0", f"title={language} (auto)",
          "-disposition:s:0", "default",
          str(out)])
 
@@ -147,7 +193,8 @@ def pick_device(requested: str) -> tuple[str, str]:
 
 
 def transcribe(wav: Path, model_name: str, language: str, device: str,
-               progress: bool) -> list[Word]:
+               progress: bool) -> tuple[list[Word], str]:
+    """Return the transcribed words and the language code that was used."""
     from faster_whisper import WhisperModel
 
     dev, ctype = pick_device(device)
@@ -157,7 +204,7 @@ def transcribe(wav: Path, model_name: str, language: str, device: str,
 
     segments, info = model.transcribe(
         str(wav),
-        language=language,
+        language=None if language == "auto" else language,
         beam_size=5,
         word_timestamps=True,
         vad_filter=True,                       # skip silence and music
@@ -166,8 +213,9 @@ def transcribe(wav: Path, model_name: str, language: str, device: str,
         no_speech_threshold=0.6,
     )
     total = info.duration
-    print(f"[3/4] transcribing {total/60:.1f} min of audio "
-          f"(language={info.language}, p={info.language_probability:.2f})")
+    detected = "detected" if language == "auto" else "given"
+    print(f"[3/4] transcribing {total/60:.1f} min of audio, language {info.language} "
+          f"({detected}, confidence {info.language_probability:.0%})")
 
     words: list[Word] = []
     t0 = time.time()
@@ -187,7 +235,7 @@ def transcribe(wav: Path, model_name: str, language: str, device: str,
                   f"  eta {eta/60:4.1f} min", end="", flush=True)
     if progress:
         print()
-    return words
+    return words, info.language
 
 
 # --------------------------------------------------------------------------- #
@@ -201,25 +249,26 @@ class Cue:
     text: str
 
 
-STRONG_END = re.compile(r"[.!?…]+[»\"')]*$")
-WEAK_END = re.compile(r"[,;:—-]+$")
+STRONG_END = re.compile(r"[.!?…。！？]+[»\"')」』]*$")
+WEAK_END = re.compile(r"[,;:—\-、，；：]+$")
 
 
-def build_cues(words: list[Word]) -> list[Cue]:
+def build_cues(words: list[Word], layout: Layout) -> list[Cue]:
     """Group words into cues that fit on screen and break at natural points."""
-    max_chars = MAX_LINE_CHARS * MAX_LINES
+    max_chars = layout.max_line_chars * MAX_LINES
+    sep = layout.sep
     cues: list[Cue] = []
     cur: list[Word] = []
 
     def text_len(ws: list[Word]) -> int:
-        return sum(len(x.text) for x in ws) + max(len(ws) - 1, 0)
+        return sum(len(x.text) for x in ws) + len(sep) * max(len(ws) - 1, 0)
 
     def flush(upto: int | None = None) -> None:
         """Emit cur[:upto] as a cue and keep the rest for the next one."""
         part = cur[:upto] if upto is not None else cur[:]
         rest = cur[upto:] if upto is not None else []
         if part:
-            cues.append(Cue(part[0].start, part[-1].end, " ".join(w.text for w in part)))
+            cues.append(Cue(part[0].start, part[-1].end, sep.join(w.text for w in part)))
         cur[:] = rest
 
     def last_good_break() -> int | None:
@@ -241,7 +290,7 @@ def build_cues(words: list[Word]) -> list[Cue]:
                 flush()                                  # natural break: end of sentence
             elif WEAK_END.search(prev) and cur_len >= max_chars * 0.7:
                 flush()                                  # comma late in the cue
-            elif cur_len + 1 + len(w.text) > max_chars or w.end - cur[0].start > MAX_CUE_SECONDS:
+            elif cur_len + len(sep) + len(w.text) > max_chars or w.end - cur[0].start > MAX_CUE_SECONDS:
                 flush(last_good_break())                 # forced: back up to punctuation
         cur.append(w)
     flush()
@@ -256,16 +305,21 @@ def build_cues(words: list[Word]) -> list[Cue]:
     return cues
 
 
-def wrap_lines(text: str) -> str:
+def wrap_lines(text: str, layout: Layout) -> str:
     """Split a cue into at most two lines of similar length, preferring a
     break after punctuation, so the second line is never a lonely word."""
-    if len(text) <= MAX_LINE_CHARS:
+    max_chars = layout.max_line_chars
+    if len(text) <= max_chars:
         return text
-    words = text.split()
+    if layout.sep == " ":
+        units = text.split()
+        candidates = [(" ".join(units[:i]), " ".join(units[i:])) for i in range(1, len(units))]
+    else:   # no spaces between words: any character boundary is a candidate
+        candidates = [(text[:i], text[i:]) for i in range(1, len(text))]
+
     best, best_score = None, None
-    for i in range(1, len(words)):
-        a, b = " ".join(words[:i]), " ".join(words[i:])
-        if len(a) > MAX_LINE_CHARS or len(b) > MAX_LINE_CHARS:
+    for a, b in candidates:
+        if len(a) > max_chars or len(b) > max_chars:
             continue
         score = abs(len(a) - len(b))
         if STRONG_END.search(a) or WEAK_END.search(a):
@@ -286,10 +340,11 @@ def srt_time(t: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def write_srt(cues: list[Cue], path: Path) -> None:
+def write_srt(cues: list[Cue], path: Path, layout: Layout) -> None:
     with path.open("w", encoding="utf-8") as f:
         for i, c in enumerate(cues, 1):
-            f.write(f"{i}\n{srt_time(c.start)} --> {srt_time(c.end)}\n{wrap_lines(c.text)}\n\n")
+            f.write(f"{i}\n{srt_time(c.start)} --> {srt_time(c.end)}\n"
+                    f"{wrap_lines(c.text, layout)}\n\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -299,18 +354,19 @@ def write_srt(cues: list[Cue], path: Path) -> None:
 def process(media: Path, args: argparse.Namespace, ffmpeg: str, ffprobe: str) -> None:
     out_dir = Path(args.output_dir) if args.output_dir else media.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    srt = out_dir / f"{media.stem}.{args.language}.srt"
 
     print(f"=== {media.name}")
     with tempfile.TemporaryDirectory(prefix="subs_") as tmp:
         wav = Path(tmp) / "audio.wav"
         print("[1/4] extracting audio")
         extract_audio(ffmpeg, media, wav)
-        words = transcribe(wav, args.model, args.language, args.device,
-                           progress=not args.quiet)
+        words, language = transcribe(wav, args.model, args.language, args.device,
+                                     progress=not args.quiet)
 
-    cues = build_cues(words)
-    write_srt(cues, srt)
+    layout = layout_for(language)
+    srt = out_dir / f"{media.stem}.{language}.srt"
+    cues = build_cues(words, layout)
+    write_srt(cues, srt, layout)
     print(f"[4/4] wrote {len(cues)} cues -> {srt}")
 
     if args.srt_only or not has_video_stream(ffprobe, media):
@@ -322,7 +378,7 @@ def process(media: Path, args: argparse.Namespace, ffmpeg: str, ffprobe: str) ->
     else:
         out = out_dir / f"{media.stem}.subbed.mkv"
         print(f"      attaching subtitle track -> {out.name}")
-        attach_subtitles(ffmpeg, media, srt, out)
+        attach_subtitles(ffmpeg, media, srt, out, language)
     print(f"      done: {out}")
 
 
@@ -334,7 +390,9 @@ def main() -> None:
     p.add_argument("--model", default="large-v3-turbo",
                    help="Whisper model: tiny, base, small, medium, large-v3, "
                         "large-v3-turbo (default)")
-    p.add_argument("--language", default="ru", help="spoken language code (default ru)")
+    p.add_argument("--language", default="auto",
+                   help="spoken language code such as ru, en, ja; default auto = detect "
+                        "from the first 30 seconds of speech")
     p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     p.add_argument("--output-dir", help="where to write outputs (default: next to input)")
     p.add_argument("--srt-only", action="store_true", help="only write the .srt file")
