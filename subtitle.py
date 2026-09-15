@@ -161,8 +161,31 @@ def is_url(s: str) -> bool:
     return s.startswith(("http://", "https://"))
 
 
-def download(url: str, out_dir: Path, ffmpeg: str, max_height: int, quiet: bool) -> list[Path]:
-    """Download a video (or every video of a playlist) with yt-dlp. Returns the file paths."""
+def parse_browser_spec(spec: str) -> tuple[str, str | None, str | None, str | None]:
+    """Parse yt-dlp's --cookies-from-browser value into its (browser, keyring,
+    profile, container) tuple. Syntax: BROWSER[+KEYRING][:PROFILE][::CONTAINER]."""
+    container = None
+    if "::" in spec:
+        spec, container = spec.split("::", 1)
+    profile = None
+    if ":" in spec:
+        spec, profile = spec.split(":", 1)
+    keyring = None
+    if "+" in spec:
+        spec, keyring = spec.split("+", 1)
+    return spec.lower(), keyring or None, profile or None, container or None
+
+
+def download(url: str, out_dir: Path, ffmpeg: str, max_height: int, quiet: bool,
+             cookies_from_browser: str | None = None,
+             cookies_file: str | None = None) -> list[Path]:
+    """Download a video (or every video of a playlist) with yt-dlp. Returns the file paths.
+
+    Cookies let yt-dlp download videos that need a logged-in session, such as
+    age-restricted YouTube videos, using the account the browser is already
+    signed in to. Nothing is copied out of the browser: yt-dlp reads its cookie
+    store directly at download time, exactly as its own --cookies... flags do.
+    """
     import yt_dlp
 
     opts = {
@@ -175,6 +198,10 @@ def download(url: str, out_dir: Path, ffmpeg: str, max_height: int, quiet: bool)
         "noprogress": quiet,
         "ignoreerrors": "only_download",   # a broken playlist entry doesn't stop the rest
     }
+    if cookies_from_browser:
+        opts["cookiesfrombrowser"] = parse_browser_spec(cookies_from_browser)
+    if cookies_file:
+        opts["cookiefile"] = cookies_file
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
     entries = info.get("entries") or [info]
@@ -457,6 +484,14 @@ def parse_args() -> argparse.Namespace:
                         "for URLs the current directory)")
     p.add_argument("--max-height", type=int, default=1080,
                    help="highest video resolution to download for URLs (default 1080)")
+    p.add_argument("--cookies-from-browser", metavar="BROWSER",
+                   help="use cookies from this browser so URLs that need a login "
+                        "(e.g. age-restricted YouTube videos) can be downloaded. "
+                        "Value is BROWSER[+KEYRING][:PROFILE][::CONTAINER], "
+                        "e.g. firefox, chrome, or chrome:Default")
+    p.add_argument("--cookies", metavar="FILE",
+                   help="use cookies from a Netscape-format cookies.txt file "
+                        "(alternative to --cookies-from-browser)")
     p.add_argument("--srt-only", action="store_true", help="only write the .srt file")
     p.add_argument("--burn", action="store_true",
                    help="burn subtitles into the picture (re-encodes video) "
@@ -478,7 +513,8 @@ def main() -> None:
             target.mkdir(parents=True, exist_ok=True)
             print(f"=== downloading {item}")
             try:
-                files = download(item, target, ffmpeg, args.max_height, args.quiet)
+                files = download(item, target, ffmpeg, args.max_height, args.quiet,
+                                 args.cookies_from_browser, args.cookies)
             except Exception as e:  # yt-dlp raises many kinds; report and move on
                 print(f"error: download failed: {e}", file=sys.stderr)
                 failures += 1

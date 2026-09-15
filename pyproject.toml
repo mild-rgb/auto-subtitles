@@ -8,4 +8,8 @@ dependencies = [
     "nvidia-cublas-cu12>=12.9.2.10; sys_platform != 'darwin'",
     "nvidia-cudnn-cu12>=9; sys_platform != 'darwin'",
     "yt-dlp>=2026.8.19",
+    # Lets yt-dlp decrypt cookies from Chromium-based browsers (Chrome, Brave,
+    # Edge) via the system keyring, for --cookies-from-browser. Linux only;
+    # Firefox needs nothing extra, and the other platforms handle this natively.
+    "secretstorage>=3.3; sys_platform == 'linux'",
 ]

@@ -6,7 +6,7 @@ Run with:  uv run python -m unittest
 import unittest
 
 from subtitle import (CJK_LAYOUT, DEFAULT_LAYOUT, MIN_CUE_SECONDS, Word, build_cues,
-                      layout_for, srt_time, wrap_lines)
+                      layout_for, parse_browser_spec, srt_time, wrap_lines)
 
 
 def words(text: str, start: float = 0.0, step: float = 0.3) -> list[Word]:
@@ -76,6 +76,25 @@ class BuildCuesTest(unittest.TestCase):
         self.assertEqual(len(cues), 2)
         self.assertLess(cues[0].end, cues[1].start)
         self.assertGreaterEqual(cues[1].end - cues[1].start, MIN_CUE_SECONDS)
+
+
+class BrowserSpecTest(unittest.TestCase):
+    def test_browser_only(self):
+        self.assertEqual(parse_browser_spec("firefox"), ("firefox", None, None, None))
+
+    def test_is_lowercased(self):
+        self.assertEqual(parse_browser_spec("Chrome"), ("chrome", None, None, None))
+
+    def test_profile(self):
+        self.assertEqual(parse_browser_spec("chrome:Default"), ("chrome", None, "Default", None))
+
+    def test_keyring(self):
+        self.assertEqual(parse_browser_spec("chromium+kwallet"),
+                         ("chromium", "kwallet", None, None))
+
+    def test_profile_and_container(self):
+        self.assertEqual(parse_browser_spec("firefox:dev::work"),
+                         ("firefox", None, "dev", "work"))
 
 
 class WrapLinesTest(unittest.TestCase):

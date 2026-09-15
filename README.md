@@ -56,6 +56,9 @@ uv run subtitle.py film.mp4 --output-dir ~/Videos/subbed
 # current directory (or --output-dir), then processed like a local file
 uv run subtitle.py "https://www.youtube.com/watch?v=XXXXXXXXXXX"
 uv run subtitle.py "https://www.youtube.com/watch?v=XXXXXXXXXXX" --max-height 720 --output-dir ~/Videos
+
+# An age-restricted or members-only video: reuse the login from your browser
+uv run subtitle.py "https://www.youtube.com/watch?v=XXXXXXXXXXX" --cookies-from-browser firefox
 ```
 
 Try it on the included sample, a 90 second public-domain reading of Chekhov's play "Предложение" (LibriVox):
@@ -85,6 +88,8 @@ Speed: about 10x real time on a modest GPU (GTX 1050 Ti), so a 2 hour film takes
 | `--crf` | 20 | video quality for `--burn`, lower is better and bigger |
 | `--srt-only` | off | skip the video step |
 | `--max-height` | 1080 | highest resolution to download when the input is a URL |
+| `--cookies-from-browser` | off | reuse the login cookies of a browser (`firefox`, `chrome`, `brave`, `edge`, ...) so age-restricted or members-only videos can be downloaded. Full form is `BROWSER[+KEYRING][:PROFILE][::CONTAINER]`, as in yt-dlp |
+| `--cookies` | off | same, but from a Netscape-format `cookies.txt` file |
 | `--quiet` | off | hide the progress line |
 
 Subtitle layout limits (line length per script, cue duration, pause splitting) are constants at the top of `subtitle.py`.
@@ -95,6 +100,7 @@ Subtitle layout limits (line length per script, cue duration, pause splitting) a
 - Very noisy or overlapping dialogue gets worse results. Try `--model large-v3` for a difficult film.
 - Quality depends on the language. Major European and East Asian languages are very good. Low-resource languages (many African languages, Welsh, Nepali, Lao and similar) come out rough.
 - A film with two languages in it is a known weak spot. Whisper picks one language per 30 second chunk and tends to garble the other.
+- YouTube refuses age-restricted and members-only videos to anonymous downloads. Pass `--cookies-from-browser firefox` (or `chrome`, `brave`, `edge`) and yt-dlp reads the cookies of the account that browser is signed in to. Nothing is copied out of the browser; the cookies are read directly at download time. On Linux, Chromium-based browsers store cookies encrypted, so the browser must be signed in and the desktop keyring unlocked. If you use a `cookies.txt` browser extension instead, pass the file with `--cookies FILE`.
 - The `.srt` is the source of truth. Fix it in a text editor and re-attach with:
 
 ```bash
